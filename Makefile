@@ -373,6 +373,26 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
 		   -fno-delete-null-pointer-checks
+
+PANTECH_ANDROID_FLAGS := -DT_MAGNUS -I$(srctree)/include/pantech \
+		-include $(srctree)/include/pantech/CUST_PANTECH.h \
+		-DFEATURE_AARM_RELEASE_MODE
+
+$(info "======================LINUX INCLUDE===========================================================")
+$(info $(LINUXINCLUDE))
+$(info "==============================================================================================")
+
+######################################################################
+# PANTECH_ANDROID_FLAGS
+######################################################################
+# Android SKY cust Feature
+# Add START. by sungwook on 2010-05-07
+#----------------------------------------------------------------------
+KBUILD_CFLAGS   += $(PANTECH_ANDROID_FLAGS) -D__KERNELBUILD__
+#----------------------------------------------------------------------
+$(info "KERNEL ======================================================================================")
+$(info $(KBUILD_CFLAGS))
+$(info "==============================================================================================")
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
 KBUILD_AFLAGS   := -D__ASSEMBLY__

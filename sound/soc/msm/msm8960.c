@@ -104,6 +104,22 @@ static int msm8960_enable_codec_ext_clk(struct snd_soc_codec *codec, int enable,
 					bool dapm);
 static bool msm8960_swap_gnd_mic(struct snd_soc_codec *codec);
 
+#ifdef CONFIG_PANTECH_SND
+static struct tabla_mbhc_config mbhc_cfg = {
+	.headset_jack = &hs_jack,
+	.button_jack = &button_jack,
+	.read_fw_bin = false,
+	.calibration = NULL,
+	.micbias = TABLA_MICBIAS2,
+	.mclk_cb_fn = msm8960_enable_codec_ext_clk,
+	.mclk_rate = TABLA_EXT_CLK_RATE,
+	.gpio = JACK_DETECT_GPIO,      
+	.gpio_irq = JACK_DETECT_INT,     
+	.gpio_level_insert = 1,
+	.swap_gnd_mic = NULL,
+	.detect_extn_cable = false,
+};
+#else
 static struct tabla_mbhc_config mbhc_cfg = {
 	.headset_jack = &hs_jack,
 	.button_jack = &button_jack,
@@ -118,6 +134,7 @@ static struct tabla_mbhc_config mbhc_cfg = {
 	.swap_gnd_mic = NULL,
 	.detect_extn_cable = false,
 };
+#endif
 
 static u32 us_euro_sel_gpio = PM8921_GPIO_PM_TO_SYS(JACK_US_EURO_SEL_GPIO);
 
@@ -487,12 +504,22 @@ static const struct snd_soc_dapm_route common_audio_map[] = {
 	 * routing entries below are based on bias arrangement
 	 * on FLUID.
 	 */
+#ifdef CONFIG_PANTECH_SND
+	{"AMIC3", NULL, "MIC BIAS3 External"},
+	{"MIC BIAS3 External", NULL, "Handset Mic"},
+
+#if defined(T_MAGNUS) //for Fluence
+	{"AMIC4", NULL, "MIC BIAS4 External"},
+	{"MIC BIAS4 External", NULL, "Handset Mic"},	
+#endif
+#else
 	{"AMIC3", NULL, "MIC BIAS3 Internal1"},
 	{"MIC BIAS3 Internal1", NULL, "MIC BIAS2 External"},
 	{"MIC BIAS2 External", NULL, "ANCRight Headset Mic"},
 	{"AMIC4", NULL, "MIC BIAS1 Internal2"},
 	{"MIC BIAS1 Internal2", NULL, "MIC BIAS2 External"},
 	{"MIC BIAS2 External", NULL, "ANCLeft Headset Mic"},
+#endif
 
 	{"HEADPHONE", NULL, "LDO_H"},
 
@@ -554,6 +581,9 @@ static const char *slim0_tx_ch_text[] = {"One", "Two", "Three", "Four"};
 static char const *hdmi_rx_ch_text[] = {"Two", "Three", "Four", "Five",
 					"Six", "Seven", "Eight"};
 static const char * const hdmi_rate[] = {"Default", "Variable"};
+#ifdef CONFIG_PANTECH_SND
+static const char *headset_status_function[] = {"Get"};
+#endif
 
 static const struct soc_enum msm8960_enum[] = {
 	SOC_ENUM_SINGLE_EXT(2, spk_function),
@@ -561,6 +591,9 @@ static const struct soc_enum msm8960_enum[] = {
 	SOC_ENUM_SINGLE_EXT(4, slim0_tx_ch_text),
 	SOC_ENUM_SINGLE_EXT(2, hdmi_rate),
 	SOC_ENUM_SINGLE_EXT(7, hdmi_rx_ch_text),
+#ifdef CONFIG_PANTECH_SND
+	SOC_ENUM_SINGLE_EXT(1, headset_status_function),
+#endif
 };
 
 static const char *btsco_rate_text[] = {"8000", "16000"};
@@ -701,6 +734,20 @@ static int msm8960_hdmi_rate_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+#ifdef CONFIG_PANTECH_SND
+static int headset_status_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = wcd9310_headsetJackStatusGet();
+	return 0;
+}
+
+static int headset_status_set(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
+{
+	pr_info("%s() %s\n", __func__, "This behaviour is not implemented");
+	return 0;
+}
+#endif
+
 static const struct snd_kcontrol_new tabla_msm8960_controls[] = {
 	SOC_ENUM_EXT("Speaker Function", msm8960_enum[0], msm8960_get_spk,
 		msm8960_set_spk),
@@ -708,6 +755,10 @@ static const struct snd_kcontrol_new tabla_msm8960_controls[] = {
 		msm8960_slim_0_rx_ch_get, msm8960_slim_0_rx_ch_put),
 	SOC_ENUM_EXT("SLIM_0_TX Channels", msm8960_enum[2],
 		msm8960_slim_0_tx_ch_get, msm8960_slim_0_tx_ch_put),
+#ifdef CONFIG_PANTECH_SND
+	SOC_ENUM_EXT("Headset Status", msm8960_enum[3], headset_status_get,
+		headset_status_set),
+#endif
 	SOC_ENUM_EXT("Internal BTSCO SampleRate", msm8960_btsco_enum[0],
 		msm8960_btsco_rate_get, msm8960_btsco_rate_put),
 	SOC_ENUM_EXT("AUX PCM SampleRate", msm8960_auxpcm_enum[0],
@@ -749,8 +800,13 @@ static void *def_tabla_mbhc_cal(void)
 	S(t_ins_retry, 200);
 #undef S
 #define S(X, Y) ((TABLA_MBHC_CAL_PLUG_TYPE_PTR(tabla_cal)->X) = (Y))
+#ifdef PANTECH_SND
+	S(v_no_mic, 400);
+	S(v_hs_max, 2900);
+#else
 	S(v_no_mic, 30);
 	S(v_hs_max, 2400);
+#endif
 #undef S
 #define S(X, Y) ((TABLA_MBHC_CAL_BTN_DET_PTR(tabla_cal)->X) = (Y))
 	S(c[0], 62);
@@ -767,6 +823,24 @@ static void *def_tabla_mbhc_cal(void)
 	btn_cfg = TABLA_MBHC_CAL_BTN_DET_PTR(tabla_cal);
 	btn_low = tabla_mbhc_cal_btn_det_mp(btn_cfg, TABLA_BTN_DET_V_BTN_LOW);
 	btn_high = tabla_mbhc_cal_btn_det_mp(btn_cfg, TABLA_BTN_DET_V_BTN_HIGH);
+#ifdef CONFIG_PANTECH_SND
+	btn_low[0] = -50;
+	btn_high[0] = 180; //Q.C requirement
+	btn_low[1] = 200;
+	btn_high[1] = 250;
+	btn_low[2] = 200;
+	btn_high[2] = 250;
+	btn_low[3] = 200;
+	btn_high[3] = 250;
+	btn_low[4] = 200;
+	btn_high[4] = 250;
+	btn_low[5] = 200;
+	btn_high[5] = 250;
+	btn_low[6] = 200;
+	btn_high[6] = 250;
+	btn_low[7] = 200;
+	btn_high[7] = 250;
+#else
 	btn_low[0] = -50;
 	btn_high[0] = 21;
 	btn_low[1] = 22;
@@ -783,6 +857,7 @@ static void *def_tabla_mbhc_cal(void)
 	btn_high[6] = 272;
 	btn_low[7] = 273;
 	btn_high[7] = 400;
+#endif
 	n_ready = tabla_mbhc_cal_btn_det_mp(btn_cfg, TABLA_BTN_DET_N_READY);
 	n_ready[0] = 80;
 	n_ready[1] = 68;
@@ -999,6 +1074,12 @@ static int msm8960_audrx_init(struct snd_soc_pcm_runtime *rtd)
 		if (hs_detect_extn_cable)
 			mbhc_cfg.detect_extn_cable = true;
 	}
+
+#if defined(T_MAGNUS)
+	mbhc_cfg.gpio = PM8921_GPIO_PM_TO_SYS(JACK_DETECT_GPIO);
+	mbhc_cfg.gpio_irq = JACK_DETECT_INT;
+#endif
+
 
 	if (mbhc_cfg.gpio) {
 		err = pm8xxx_gpio_config(mbhc_cfg.gpio, &jack_gpio_cfg);

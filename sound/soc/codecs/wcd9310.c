@@ -38,6 +38,12 @@
 #include <linux/suspend.h>
 #include "wcd9310.h"
 
+#ifdef CONFIG_PANTECH_SND
+#include <linux/wakelock.h>
+
+static struct wake_lock snd_wakeup;
+#endif
+
 static int cfilt_adjust_ms = 10;
 module_param(cfilt_adjust_ms, int, 0644);
 MODULE_PARM_DESC(cfilt_adjust_ms, "delay after adjusting cfilt voltage in ms");
@@ -468,6 +474,15 @@ static unsigned short tx_digital_gain_reg[] = {
 	TABLA_A_CDC_TX9_VOL_CTL_GAIN,
 	TABLA_A_CDC_TX10_VOL_CTL_GAIN,
 };
+
+#ifdef CONFIG_PANTECH_SND
+static int headset_jack_status = 0;
+ 
+int wcd9310_headsetJackStatusGet(void)
+{
+	return headset_jack_status;
+}
+#endif
 
 static int tabla_codec_enable_charge_pump(struct snd_soc_dapm_widget *w,
 		struct snd_kcontrol *kcontrol, int event)
@@ -3032,6 +3047,10 @@ static void tabla_snd_soc_jack_report(struct tabla_priv *tabla,
 				      int mask)
 {
 	/* XXX: wake_lock_timeout()? */
+#ifdef CONFIG_PANTECH_SND
+	wake_lock_timeout(&snd_wakeup, msecs_to_jiffies(600)); // 600ms
+#endif
+
 	snd_soc_jack_report_no_dapm(jack, status, mask);
 }
 
@@ -4085,6 +4104,13 @@ static void tabla_codec_calibrate_rel(struct snd_soc_codec *codec)
 {
 	struct tabla_priv *tabla = snd_soc_codec_get_drvdata(codec);
 
+#ifdef CONFIG_PANTECH_SND
+	if (tabla->mbhc_state == MBHC_STATE_POTENTIAL_RECOVERY) {
+		pr_err("%s: MBHC state being recovered, do not change thresholds\n", __func__);
+		return;
+	}
+#endif
+
 	snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B3_CTL,
 		      tabla->mbhc_data.v_b1_hu & 0xFF);
 	snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B4_CTL,
@@ -4106,7 +4132,11 @@ static void tabla_codec_calibrate_rel(struct snd_soc_codec *codec)
 		      (tabla->mbhc_data.v_brl >> 8) & 0xFF);
 }
 
+#ifdef CONFIG_PANTECH_SND
+static void tabla_codec_calibrate_hs_polling(struct snd_soc_codec *codec, bool lock_acquired)
+#else
 static void tabla_codec_calibrate_hs_polling(struct snd_soc_codec *codec)
+#endif
 {
 	u8 *n_ready, *n_cic;
 	struct tabla_mbhc_btn_detect_cfg *btn_det;
@@ -4120,7 +4150,17 @@ static void tabla_codec_calibrate_hs_polling(struct snd_soc_codec *codec)
 	snd_soc_write(codec, TABLA_A_CDC_MBHC_VOLT_B2_CTL,
 		      (v_ins_hu >> 8) & 0xFF);
 
+#ifdef CONFIG_PANTECH_SND
+	if (!lock_acquired) {
+		TABLA_ACQUIRE_LOCK(tabla->codec_resource_lock);
 	tabla_codec_calibrate_rel(codec);
+		TABLA_RELEASE_LOCK(tabla->codec_resource_lock);
+	} else {
+		tabla_codec_calibrate_rel(codec);
+	}
+#else
+	tabla_codec_calibrate_rel(codec);
+#endif
 
 	n_ready = tabla_mbhc_cal_btn_det_mp(btn_det, TABLA_BTN_DET_N_READY);
 	snd_soc_write(codec, TABLA_A_CDC_MBHC_TIMER_B1_CTL,
@@ -4181,10 +4221,21 @@ int tabla_mclk_enable(struct snd_soc_codec *codec, int mclk_enable, bool dapm)
 {
 	struct tabla_priv *tabla = snd_soc_codec_get_drvdata(codec);
 
+#ifdef CONFIG_PANTECH_SND
+	bool lock_acquired = false;
+#endif
+
 	pr_debug("%s: mclk_enable = %u, dapm = %d\n", __func__, mclk_enable,
 		 dapm);
+#ifdef CONFIG_PANTECH_SND
+	if (dapm) {
+		lock_acquired = true;
+		TABLA_ACQUIRE_LOCK(tabla->codec_resource_lock);
+	}
+#else
 	if (dapm)
 		TABLA_ACQUIRE_LOCK(tabla->codec_resource_lock);
+#endif
 	if (mclk_enable) {
 		tabla->mclk_enabled = true;
 
@@ -4194,7 +4245,11 @@ int tabla_mclk_enable(struct snd_soc_codec *codec, int mclk_enable, bool dapm)
 			tabla_codec_enable_bandgap(codec,
 						   TABLA_BANDGAP_AUDIO_MODE);
 			tabla_codec_enable_clock_block(codec, 0);
+#ifdef CONFIG_PANTECH_SND
+			tabla_codec_calibrate_hs_polling(codec, lock_acquired);
+#else
 			tabla_codec_calibrate_hs_polling(codec);
+#endif
 			tabla_codec_start_hs_polling(codec);
 		} else {
 			tabla_codec_disable_clock_block(codec);
@@ -4205,8 +4260,15 @@ int tabla_mclk_enable(struct snd_soc_codec *codec, int mclk_enable, bool dapm)
 	} else {
 
 		if (!tabla->mclk_enabled) {
+#ifdef CONFIG_PANTECH_SND
+			if (dapm) {
+				TABLA_RELEASE_LOCK(tabla->codec_resource_lock);
+				lock_acquired = false;
+			}
+#else
 			if (dapm)
 				TABLA_RELEASE_LOCK(tabla->codec_resource_lock);
+#endif
 			pr_err("Error, MCLK already diabled\n");
 			return -EINVAL;
 		}
@@ -4219,7 +4281,11 @@ int tabla_mclk_enable(struct snd_soc_codec *codec, int mclk_enable, bool dapm)
 						   TABLA_BANDGAP_MBHC_MODE);
 			tabla_enable_rx_bias(codec, 1);
 			tabla_codec_enable_clock_block(codec, 1);
+#ifdef CONFIG_PANTECH_SND
+			tabla_codec_calibrate_hs_polling(codec, lock_acquired);
+#else
 			tabla_codec_calibrate_hs_polling(codec);
+#endif
 			tabla_codec_start_hs_polling(codec);
 			snd_soc_update_bits(codec, TABLA_A_CLK_BUFF_EN1,
 					0x05, 0x01);
@@ -4229,8 +4295,16 @@ int tabla_mclk_enable(struct snd_soc_codec *codec, int mclk_enable, bool dapm)
 						   TABLA_BANDGAP_OFF);
 		}
 	}
+
+#ifdef CONFIG_PANTECH_SND
+	if (dapm) {
+		TABLA_RELEASE_LOCK(tabla->codec_resource_lock);
+		lock_acquired = false;
+	}
+#else
 	if (dapm)
 		TABLA_RELEASE_LOCK(tabla->codec_resource_lock);
+#endif
 	return 0;
 }
 
@@ -5586,7 +5660,11 @@ static short tabla_codec_setup_hs_polling(struct snd_soc_codec *codec)
 	snd_soc_update_bits(codec, TABLA_A_CDC_MBHC_B1_CTL, 0x2, 0x2);
 	snd_soc_update_bits(codec, TABLA_A_CDC_MBHC_CLK_CTL, 0x8, 0x8);
 
+#ifdef CONFIG_PANTECH_SND
+	tabla_codec_calibrate_hs_polling(codec, true);
+#else
 	tabla_codec_calibrate_hs_polling(codec);
+#endif
 
 	/* don't flip override */
 	bias_value = __tabla_codec_sta_dce(codec, 1, true, true);
@@ -5715,6 +5793,9 @@ static void tabla_codec_report_plug(struct snd_soc_codec *codec, int insertion,
 			}
 			pr_debug("%s: Reporting removal %d(%x)\n", __func__,
 				 jack_type, tabla->hph_status);
+#ifdef CONFIG_PANTECH_SND
+			headset_jack_status = 0;
+#endif
 			tabla_snd_soc_jack_report(tabla,
 						  tabla->mbhc_cfg.headset_jack,
 						  tabla->hph_status,
@@ -5755,6 +5836,9 @@ static void tabla_codec_report_plug(struct snd_soc_codec *codec, int insertion,
 		if (tabla->mbhc_cfg.headset_jack) {
 			pr_debug("%s: Reporting insertion %d(%x)\n", __func__,
 				 jack_type, tabla->hph_status);
+#ifdef CONFIG_PANTECH_SND
+			headset_jack_status = jack_type;
+#endif
 			tabla_snd_soc_jack_report(tabla,
 						  tabla->mbhc_cfg.headset_jack,
 						  tabla->hph_status,
@@ -6538,7 +6622,11 @@ static irqreturn_t tabla_dce_handler(int irq, void *data)
 		priv->buttons_pressed |= mask;
 		wcd9xxx_lock_sleep(core);
 		if (schedule_delayed_work(&priv->mbhc_btn_dwork,
+#ifdef CONFIG_PANTECH_SND
+			            msecs_to_jiffies(10)) == 0) { // 10ms
+#else
 					  msecs_to_jiffies(400)) == 0) {
+#endif
 			WARN(1, "Button pressed twice without release"
 			     "event\n");
 			wcd9xxx_unlock_sleep(core);
@@ -6641,7 +6729,11 @@ static irqreturn_t tabla_release_handler(int irq, void *data)
 
 	/* revert narrowed release threshold */
 	tabla_mbhc_calc_rel_thres(codec, tabla_mbhc_highest_btn_mv(codec));
+#ifdef CONFIG_PANTECH_SND
+	tabla_codec_calibrate_hs_polling(codec, true);
+#else
 	tabla_codec_calibrate_hs_polling(codec);
+#endif
 
 	if (priv->mbhc_cfg.gpio)
 		msleep(TABLA_MBHC_GPIO_REL_DEBOUNCE_TIME_MS);
@@ -7838,7 +7930,11 @@ static int tabla_mbhc_init_and_calibrate(struct tabla_priv *tabla)
 	tabla_mbhc_cal(codec);
 	tabla_mbhc_calc_thres(codec);
 	tabla->mbhc_cfg.mclk_cb_fn(codec, 0, false);
+#ifdef CONFIG_PANTECH_SND
+	tabla_codec_calibrate_hs_polling(codec, false);
+#else
 	tabla_codec_calibrate_hs_polling(codec);
+#endif
 	if (!tabla->mbhc_cfg.gpio) {
 		INIT_WORK(&tabla->hs_correct_plug_work_nogpio,
 				  tabla_hs_correct_plug_nogpio);
@@ -7953,6 +8049,12 @@ int tabla_hs_detect(struct snd_soc_codec *codec,
 	tabla->in_gpio_handler = false;
 	tabla->current_plug = PLUG_TYPE_NONE;
 	tabla->lpi_enabled = false;
+
+#ifdef CONFIG_PANTECH_SND
+	tabla->mbhc_cfg.gpio = 0;
+	tabla->mbhc_cfg.gpio_irq = 0;
+#endif
+
 	tabla_get_mbhc_micbias_regs(codec, &tabla->mbhc_bias_regs);
 
 	/* Put CFILT in fast mode by default */
@@ -8826,6 +8928,9 @@ static int __devinit tabla_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	pr_err("tabla_probe\n");
+#ifdef CONFIG_PANTECH_SND
+	wake_lock_init(&snd_wakeup, WAKE_LOCK_SUSPEND, "snd_wakeups");
+#endif
 	if (wcd9xxx_get_intf_type() == WCD9XXX_INTERFACE_TYPE_SLIMBUS)
 		ret = snd_soc_register_codec(&pdev->dev, &soc_codec_dev_tabla,
 			tabla_dai, ARRAY_SIZE(tabla_dai));
